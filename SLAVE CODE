@@ -1,0 +1,128 @@
+#include <Arduino.h>
+#include "BluetoothSerial.h"
+
+BluetoothSerial BT;
+
+/* ===== L298N MOTOR DRIVER PINS ===== */
+#define ENA 25
+#define IN1 26
+#define IN2 27
+#define ENB 14
+#define IN3 12
+#define IN4 13
+
+char motorCmd = '0';
+bool bluetoothStop = false;   // Bluetooth emergency stop flag
+
+/* ===== MOTOR FUNCTIONS ===== */
+void stopMotors() {
+  analogWrite(ENA, 0);
+  analogWrite(ENB, 0);
+  digitalWrite(IN1, LOW); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, LOW);
+}
+
+void moveForward() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  analogWrite(ENA, 255);
+  analogWrite(ENB, 255);
+}
+
+void moveBackward() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  analogWrite(ENA, 255);
+  analogWrite(ENB, 255);
+}
+
+void turnLeft() {
+  digitalWrite(IN1, LOW); digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH); digitalWrite(IN4, LOW);
+  analogWrite(ENA, 255);
+  analogWrite(ENB, 255);
+}
+
+void turnRight() {
+  digitalWrite(IN1, HIGH); digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW); digitalWrite(IN4, HIGH);
+  analogWrite(ENA, 255);
+  analogWrite(ENB, 255);
+}
+
+/* ===== APPLY MOTOR COMMAND ===== */
+void applyMotorCmd() {
+  if (bluetoothStop) {
+    stopMotors();
+    return;
+  }
+
+  switch (motorCmd) {
+    case '2': moveForward();  break;
+    case '3': moveBackward(); break;
+    case '4': turnLeft();     break;
+    case '5': turnRight();    break;
+    default:  stopMotors();   break;
+  }
+}
+
+/* ===== SETUP ===== */
+void setup() {
+  Serial.begin(9600);              // Arduino → ESP32
+  BT.begin("SmartWheelchair");     // Bluetooth device name
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(ENB, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+
+  stopMotors();
+  BT.println("Bluetooth connected");
+}
+
+/* ===== LOOP ===== */
+void loop() {
+
+  /* ===== 1️⃣ BLUETOOTH INPUT (HIGHEST PRIORITY) ===== */
+  if (BT.available()) {
+    String btMsg = BT.readStringUntil('\n');
+    btMsg.trim();
+    btMsg.toUpperCase();
+
+    if (btMsg == "STOP") {
+      bluetoothStop = true;
+      motorCmd = '0';
+      BT.println("Wheelchair is unable to move");
+    }
+    else if (btMsg == "ENABLE") {
+      bluetoothStop = false;
+      BT.println("Wheelchair enabled, ready to move");
+    }
+  }
+
+  /* ===== 2️⃣ ARDUINO → ESP32 MESSAGES ===== */
+  if (Serial.available()) {
+    String msg = Serial.readStringUntil('\n');
+    msg.trim();
+
+    if (msg.startsWith("CMD:") && !bluetoothStop) {
+      motorCmd = msg.charAt(4);
+    }
+    else if (msg == "UNLOCKED") {
+      BT.println("Wheelchair unlocked");
+    }
+    else if (msg == "UNAUTHORIZED_FACE") {
+      BT.println("Unauthorized face detected");
+    }
+    else if (msg.startsWith("OBSTACLE:")) {
+      String dist = msg.substring(9);
+      BT.println("Obstacle detected at " + dist + " cm");
+      motorCmd = '0';
+    }
+  }
+
+  /* ===== 3️⃣ APPLY MOTOR ACTION ===== */
+  applyMotorCmd();
+}
