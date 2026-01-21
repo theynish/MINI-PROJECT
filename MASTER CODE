@@ -1,0 +1,112 @@
+#include "HUSKYLENS.h"
+#include <SoftwareSerial.h>
+
+/* ===== BUTTONS ===== */
+#define BTN_FORWARD  4
+#define BTN_BACKWARD 5
+#define BTN_LEFT     6
+#define BTN_RIGHT    7
+
+/* ===== ULTRASONIC ===== */
+#define TRIG_PIN 2
+#define ECHO_PIN 3
+#define SAFE_DISTANCE 30   // cm
+
+/* ===== SERIAL ===== */
+SoftwareSerial huskySerial(A0, A1);   // HuskyLens TX, RX
+SoftwareSerial espSerial(A2, A3);     // ESP32 RX, TX
+
+HUSKYLENS huskylens;
+
+/* ===== STATES ===== */
+bool faceUnlocked = false;
+bool obstacleStop = false;
+
+/* ===== SEND TO ESP32 ===== */
+void sendToESP(String msg) {
+  espSerial.println(msg);
+}
+
+/* ===== FACE AUTH (REGISTERED ONLY) ===== */
+void checkFaceOnce() {
+  if (faceUnlocked) return;
+
+  huskySerial.listen();
+
+  if (!huskylens.request()) return;
+  if (!huskylens.available()) {
+    sendToESP("UNAUTHORIZED_FACE");
+    return;
+  }
+
+  HUSKYLENSResult r = huskylens.read();
+
+  if (r.command == COMMAND_RETURN_BLOCK && r.ID > 0) {
+    faceUnlocked = true;
+    sendToESP("UNLOCKED");
+  } else {
+    sendToESP("UNAUTHORIZED_FACE");
+  }
+}
+
+/* ===== ULTRASONIC (ONLY AFTER UNLOCK) ===== */
+void checkUltrasonic() {
+  if (!faceUnlocked) return;
+
+  obstacleStop = false;
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+
+  long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (duration == 0) return;
+
+  int distance = duration * 0.034 / 2;
+
+  if (distance <= SAFE_DISTANCE) {
+    obstacleStop = true;
+    sendToESP("OBSTACLE:" + String(distance));
+  }
+}
+
+/* ===== BUTTON CONTROL ===== */
+void handleButtons() {
+  if (!faceUnlocked || obstacleStop) {
+    sendToESP("CMD:0");
+    return;
+  }
+
+  if      (digitalRead(BTN_FORWARD)  == LOW) sendToESP("CMD:2");
+  else if (digitalRead(BTN_BACKWARD) == LOW) sendToESP("CMD:3");
+  else if (digitalRead(BTN_LEFT)     == LOW) sendToESP("CMD:4");
+  else if (digitalRead(BTN_RIGHT)    == LOW) sendToESP("CMD:5");
+  else sendToESP("CMD:0");
+}
+
+void setup() {
+  huskySerial.begin(9600);
+  espSerial.begin(9600);
+
+  huskySerial.listen();
+  huskylens.begin(huskySerial);
+
+  pinMode(BTN_FORWARD, INPUT_PULLUP);
+  pinMode(BTN_BACKWARD, INPUT_PULLUP);
+  pinMode(BTN_LEFT, INPUT_PULLUP);
+  pinMode(BTN_RIGHT, INPUT_PULLUP);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  sendToESP("CMD:0");
+}
+
+void loop() {
+  checkFaceOnce();
+  checkUltrasonic();
+  handleButtons();
+  delay(50);
+}
